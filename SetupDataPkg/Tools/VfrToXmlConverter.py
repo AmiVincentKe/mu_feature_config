@@ -2314,6 +2314,49 @@ def xml_root_to_string(xml_root, xml_file_path, verbose=1):
         if verbose:
             logger.info('\nOutput file: %s' % xml_file_path)
 
+# Replace uuid to formatted XML file
+# xml_file_path: XML file input and output path
+# input_uuid: Fixed UUID
+def assign_fixed_uuid(xml_file_path, input_uuid):
+    try:
+        uuid_str = uuid.UUID(input_uuid, version=4)
+        with open(xml_file_path, 'r') as f:
+            xml_string = f.read()
+        xml_root = ET.fromstring(xml_string)
+
+        knobs_section = xml_root.find('Knobs')
+        knobs_section.attrib.update({'namespace': input_uuid})
+
+        # Generate GUID breakdown comment
+        guid_parts = uuid_str.hex
+        formatted_guid = (
+            f' {{ 0x{guid_parts[:8]}, 0x{guid_parts[8:12]}, 0x{guid_parts[12:16]}, '
+            f'{{{", ".join(f"0x{guid_parts[i:i + 2]}" for i in range(16, 32, 2))}}} }} '
+        )
+
+        for index, knobs_section in enumerate(list(xml_root)):
+            if knobs_section.tag == 'Knobs':
+                # Add comment to indicate the GUID namespace
+                xml_root.insert(index, ET.Comment(' namespace indicates the GUID namespace the values are stored in '))
+                xml_root.insert((index + 1), ET.Comment(formatted_guid))
+
+        # Use minidom to format the XML string
+        dom = minidom.parseString(ET.tostring(xml_root, encoding='unicode', method='xml'))
+        pretty_xml_str = dom.toprettyxml(indent='  ', newl='\n')
+
+        # Remove XML declaration
+        formatted_xml = '\n'.join(
+            line for line in pretty_xml_str.splitlines()
+            if line.strip() and not line.strip().startswith('<?xml')
+        )
+
+        with open(xml_file_path, 'w', encoding='utf-8', newline='\r\n') as f:
+            f.write(formatted_xml)
+        return xml_file_path
+    except Exception as e:
+        logger.warning(e)
+        logger.warning('Failed to assign fixed UUID %s in file %s' % (input_uuid, xml_file_path))
+        return None
 
 # Parse a list of vfr files according to the given input inf files, and generate a xml file with the option structures
 # tool_config:
@@ -2331,9 +2374,9 @@ def parse_inf_to_xml(tool_config):
         'xsi:noNamespaceSchemaLocation': 'configschema.xsd'
     })
 
-    # Create Enums element and a common ENABLEDDISABLE enum
+    # Create Enums element and a common ENABLEDISABLE enum
     enums_element = ET.SubElement(root, 'Enums')
-    enable_disable_enum = ET.SubElement(enums_element, 'Enum', name='ENABLEDDISABLE', help='')
+    enable_disable_enum = ET.SubElement(enums_element, 'Enum', name='ENABLEDISABLE', help='')
     ET.SubElement(enable_disable_enum, 'Value', name='Disabled', value='0', help='')
     ET.SubElement(enable_disable_enum, 'Value', name='Enabled', value='1', help='')
 
@@ -3095,6 +3138,11 @@ def ProcessArgs():
         help='Merge Config XML files. This argument only works when --command_line and --cfg_xml are specified',
         action="store_true"
     )
+    argParser.add_argument(
+        '-uuid', '--input_uuid', nargs=2,
+        metavar=('input.xml', 'input_uuid'),
+        help='Fixed UUID for Config XML file. This argument only works when --command_line is specified'
+    )
 
     args = argParser.parse_args()
     return args
@@ -3243,6 +3291,18 @@ if __name__ == '__main__':
         elif args.inf_file:
             logger.error('INF File not found: %s' % args.inf_file)
             ret = 1
+
+        elif args.input_uuid:
+            if not args.input_uuid[0] or not os.path.isfile(args.input_uuid[0]):
+                logger.error('File not found: %s' % args.input_uuid[0])
+                ret = 1
+            elif not args.input_uuid[1]:
+                logger.error('UUID not found: %s' % args.input_uuid[1])
+                ret = 1
+            else:
+                logger.info('Input UUID for Config XML file:')
+                logger.info(f'  Current UUID: {args.input_uuid[1]}')
+                assign_fixed_uuid (args.input_uuid[0], args.input_uuid[1])
 
         else:
             logger.error(
